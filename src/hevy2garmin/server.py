@@ -190,7 +190,7 @@ def _run_autosync() -> None:
     logger.info("Auto-sync: running scheduled sync")
     hevy_auth_failed = False
     try:
-        result = sync(limit=10, dry_run=False, respect_grace=True)
+        result = sync(limit=10, dry_run=False, record_log=False, respect_grace=True)
     except Exception as e:
         from hevy2garmin.hevy import HevyAuthError
         if isinstance(e, HevyAuthError):
@@ -1271,7 +1271,7 @@ async def api_sync(request: Request):
         return HTMLResponse('<div class="toast toast-error">Another sync is already running. Please wait.</div>')
 
     try:
-        result = sync(**sync_kwargs, respect_grace=False)
+        result = sync(**sync_kwargs, record_log=False, respect_grace=False)
     except Exception as e:
         result = {"synced": 0, "skipped": 0, "failed": 1, "unmapped": [], "error": str(e)}
     finally:
@@ -1285,43 +1285,28 @@ async def api_sync(request: Request):
 async def api_sync_single(request: Request, workout_id: str):
     try:
         from hevy2garmin.hevy import HevyClient
-        from hevy2garmin.fit import generate_fit
-        from hevy2garmin.garmin import get_client, rename_activity, set_description, upload_fit, generate_description, find_activity_by_start_time
-        import tempfile
+        from hevy2garmin.garmin import get_client
+        from hevy2garmin.merge import reset_circuit_breaker
+        from hevy2garmin.sync import sync_one_workout
 
-        # force_upload=true skips dedup (used by re-sync after edit)
         force_upload = request.query_params.get("force") == "1"
 
         config = load_config()
-        # Fetch the exact workout by ID — scanning only the first page missed
-        # older workouts for users with more than a page of history (#165).
         workout = HevyClient(api_key=config.get("hevy_api_key")).get_workout(workout_id)
         if not workout:
             return HTMLResponse('<td colspan="5">Workout not found</td>')
 
+        if config.get("merge_mode", True):
+            reset_circuit_breaker()
+
         garmin_client = get_client(config.get("garmin_email"))
-        workout_start = workout.get("start_time")
-
-        # Dedup: check if activity already exists on Garmin (skip if force)
-        existing_id = None
-        if not force_upload and workout_start:
-            existing_id = find_activity_by_start_time(garmin_client, workout_start)
-
-        from hevy2garmin.hr import hr_for_sync
-        hr_samples = hr_for_sync(db, garmin_client, workout, config)
-        with tempfile.TemporaryDirectory() as tmp:
-            fit_path = f"{tmp}/{workout_id}.fit"
-            result = generate_fit(workout, hr_samples=hr_samples, output_path=fit_path)
-            if existing_id:
-                aid = existing_id
-                logger.info("Activity already on Garmin (%s), skipping upload", aid)
-            else:
-                upload_result = upload_fit(garmin_client, fit_path, workout_start=workout_start)
-                aid = upload_result.get("activity_id")
-            if aid:
-                rename_activity(garmin_client, aid, workout["title"])
-                set_description(garmin_client, aid, generate_description(workout, calories=result.get("calories"), avg_hr=result.get("avg_hr")))
-            db.mark_synced(hevy_id=workout_id, garmin_activity_id=str(aid) if aid else None, title=workout["title"], calories=result.get("calories"), avg_hr=result.get("avg_hr"), hevy_updated_at=workout.get("updated_at"))
+        sync_one_workout(
+            workout,
+            cfg=config,
+            garmin_client=garmin_client,
+            force_upload=force_upload,
+            database=db.get_db(),
+        )
 
         start = (workout.get("start_time") or "")[:16]
         return HTMLResponse(f'<tr><td><span class="badge badge-success">✓ Synced</span></td><td>{start}</td><td><strong>{workout["title"]}</strong></td><td>{len(workout.get("exercises", []))}</td><td></td></tr>')
@@ -1742,9 +1727,6 @@ async def _do_sync_one(request: Request):
         return JSONResponse({"error": "Hevy API key not configured"}, status_code=400)
 
     from hevy2garmin.hevy import HevyClient
-    from hevy2garmin.garmin import get_client, upload_fit, rename_activity, set_description, generate_description
-    from hevy2garmin.fit import generate_fit
-    import tempfile
 
     hevy = HevyClient(api_key=hevy_api_key)
 
@@ -1774,99 +1756,19 @@ async def _do_sync_one(request: Request):
 
     # Sync this one workout
     try:
-        from hevy2garmin.garmin import find_activity_by_start_time
-        from hevy2garmin.merge import attempt_merge
+        from hevy2garmin.garmin import get_client
+        from hevy2garmin.merge import reset_circuit_breaker
+        from hevy2garmin.sync import sync_one_workout
+
+        if config.get("merge_mode", True):
+            reset_circuit_breaker()
+
         garmin_client = get_client(config.get("garmin_email"))
-        workout_start = unsynced.get("start_time")
-        merge_mode = config.get("merge_mode", True)
-        sync_method = "upload"
-        merge_forced_fresh = False
-        merge_delete_id = None
-
-        # Merge mode: try to enhance a watch-recorded activity with Hevy data
-        if merge_mode:
-            merge_result = attempt_merge(
-                garmin_client, unsynced, db.get_db(),
-                overlap_threshold=config.get("merge_overlap_pct", 70) / 100.0,
-                max_drift_minutes=config.get("merge_max_drift_min", 20),
-                activity_types=set(config.get("merge_activity_types", ["strength_training"])),
-                watch_strategy=config.get("merge_watch_strategy", "replace"),
-            )
-            if merge_result.merged:
-                aid = merge_result.activity_id
-                result = {"calories": 0, "avg_hr": None}
-                # Generate FIT just for calorie estimate
-                with tempfile.TemporaryDirectory() as tmp:
-                    fit_path = f"{tmp}/{unsynced['id']}.fit"
-                    result = generate_fit(unsynced, hr_samples=None, output_path=fit_path)
-                sync_method = "merge"
-                db.mark_synced(
-                    hevy_id=unsynced["id"],
-                    garmin_activity_id=str(aid),
-                    title=unsynced["title"],
-                    calories=result.get("calories"),
-                    avg_hr=result.get("avg_hr"),
-                    hevy_updated_at=unsynced.get("updated_at"),
-                    sync_method=sync_method,
-                )
-                remaining = hevy.get_workout_count() - db.get_synced_count()
-                return JSONResponse({"synced": 1, "title": unsynced["title"], "remaining": max(0, remaining), "done": remaining <= 0})
-            merge_forced_fresh = merge_result.force_fresh_upload
-            merge_delete_id = merge_result.delete_after_upload
-
-        # HR enrichment for the uploaded FIT (#158): merged HR (AirPods-preferred,
-        # watch fill), best-effort. Computed after the merge early-return so the
-        # merge path doesn't pay for an HR fetch it won't upload.
-        from hevy2garmin.hr import hr_for_sync
-        hr_samples = hr_for_sync(db, garmin_client, unsynced, config)
-
-        # Dedup: check if this workout already exists on Garmin before uploading.
-        # Prevents duplicates when a prior sync uploaded successfully but crashed
-        # before marking the workout as synced in the DB. Skip it when the merge
-        # asked for a fresh named upload (#159), else it finds the watch activity.
-        existing_id = None
-        if workout_start and not merge_forced_fresh:
-            existing_id = find_activity_by_start_time(garmin_client, workout_start)
-
-        if existing_id:
-            logger.info("Activity already on Garmin (%s), skipping upload for %s", existing_id, unsynced["title"])
-            aid = existing_id
-            # Still generate FIT to get calorie estimate
-            with tempfile.TemporaryDirectory() as tmp:
-                fit_path = f"{tmp}/{unsynced['id']}.fit"
-                result = generate_fit(unsynced, hr_samples=hr_samples, output_path=fit_path)
-            rename_activity(garmin_client, aid, unsynced["title"])
-            desc = generate_description(unsynced, calories=result.get("calories"), avg_hr=result.get("avg_hr"))
-            set_description(garmin_client, aid, desc)
-            sync_method = "upload_fallback"
-        else:
-            with tempfile.TemporaryDirectory() as tmp:
-                fit_path = f"{tmp}/{unsynced['id']}.fit"
-                result = generate_fit(unsynced, hr_samples=hr_samples, output_path=fit_path)
-                upload_result = upload_fit(garmin_client, fit_path, workout_start=workout_start)
-                aid = upload_result.get("activity_id")
-                if aid and merge_delete_id:
-                    # "replace" strategy (#159): named upload succeeded, delete the
-                    # watch recording so the workout is a single activity.
-                    try:
-                        from hevy2garmin.garmin import delete_activity
-                        delete_activity(garmin_client, merge_delete_id)
-                        logger.info("Removed watch copy %s (replaced by %s)", merge_delete_id, aid)
-                    except Exception as e:
-                        logger.warning("Could not delete watch activity %s: %s", merge_delete_id, e)
-                if aid:
-                    rename_activity(garmin_client, aid, unsynced["title"])
-                    desc = generate_description(unsynced, calories=result.get("calories"), avg_hr=result.get("avg_hr"))
-                    set_description(garmin_client, aid, desc)
-
-        db.mark_synced(
-            hevy_id=unsynced["id"],
-            garmin_activity_id=str(aid) if aid else None,
-            title=unsynced["title"],
-            calories=result.get("calories"),
-            avg_hr=result.get("avg_hr"),
-            hevy_updated_at=unsynced.get("updated_at"),
-            sync_method=sync_method,
+        sync_one_workout(
+            unsynced,
+            cfg=config,
+            garmin_client=garmin_client,
+            database=db.get_db(),
         )
 
         remaining = hevy.get_workout_count() - db.get_synced_count()
