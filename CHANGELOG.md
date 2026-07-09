@@ -6,6 +6,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-07-09
+
+### Added
+- **Enforced cooldown after a Garmin login rate-limit** ([#211](https://github.com/drkostas/hevy2garmin/issues/211)). When Garmin rate-limits a login, retrying resets Garmin's own timer and makes it worse. The tool now records an exponential-backoff cooldown (2h, then 4h, 8h, capped at 24h, reset after a clean login) and, while it is active, the local setup skips the Garmin login attempt entirely so you cannot deepen the block by retrying. Cloud rate-limits are recorded too, and the setup page and dashboard show a live countdown with the Connect button disabled until it clears. Sync resumes automatically once the window passes.
+
 ## [0.5.13] - 2026-07-09
 
 ### Added
