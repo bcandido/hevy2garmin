@@ -73,3 +73,5 @@ def test_workout_template_shows_resolution_states() -> None:
     assert "Skipped" in html
     assert "Needs review" in html
     assert "verify candidate" in html
+    assert "if (reason === null) return;" in html
+    assert "if (garminId === null) return;" in html

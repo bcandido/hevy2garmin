@@ -559,12 +559,14 @@ async function pendingAction(hevyId, action, btn) {
 async function manualAction(hevyId, action, btn) {
     const label = action === 'skip' ? 'skip' : 'mark as synced';
     if (!confirm('Manually ' + label + ' this workout? If an upload is pending, a delayed Garmin activity may still appear.')) return;
-    const reason = prompt('Optional reason:', '') || '';
+    const reason = prompt('Optional reason:', '');
+    if (reason === null) return;
     const form = new FormData();
     form.append('reason', reason.slice(0, 1000));
     form.append('confirm', hevyId);
     if (action === 'mark-synced') {
-        const garminId = prompt('Optional Garmin activity ID:', '') || '';
+        const garminId = prompt('Optional Garmin activity ID:', '');
+        if (garminId === null) return;
         if (garminId) form.append('garmin_id', garminId);
     }
     btn.disabled = true;
