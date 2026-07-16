@@ -166,7 +166,7 @@ def cmd_sync_routines(args: argparse.Namespace) -> None:
 
     print(
         f"\n✓ Routine sync complete: {result['created']} created, "
-        f"{result['skipped']} skipped, {result['failed']} failed"
+        f"{result['updated']} updated, {result['skipped']} skipped, {result['failed']} failed"
         + (f", {result['scheduled']} scheduled" if result.get("scheduled") else "")
     )
     if result["failed"] > 0:

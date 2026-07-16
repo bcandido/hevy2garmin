@@ -1337,7 +1337,8 @@ async def api_routines_sync(request: Request):
         _sync_executing.release()
 
     msg = (
-        f"{result['created']} created, {result['skipped']} skipped, {result['failed']} failed"
+        f"{result['created']} created, {result['updated']} updated, "
+        f"{result['skipped']} skipped, {result['failed']} failed"
         + (f", {result['scheduled']} scheduled" if result.get("scheduled") else "")
     )
     cls = "toast-error" if result["failed"] else "toast-success"

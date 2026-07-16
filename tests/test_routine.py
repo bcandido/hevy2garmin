@@ -229,7 +229,8 @@ class TestSyncRoutines:
         store, create_mock, _, patches = self._patched(tmp_path, routines)
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             result = sync_module.sync_routines()
-        assert result == {"created": 1, "skipped": 0, "failed": 0, "scheduled": 0, "total": 1}
+        assert result == {"created": 1, "updated": 0, "skipped": 0, "failed": 0,
+                          "scheduled": 0, "total": 1}
         create_mock.assert_called_once()
         assert store.get_synced_routine("r1")["garmin_workout_id"] == "777"
 
@@ -258,7 +259,8 @@ class TestSyncRoutines:
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
                 patch.object(sync_module, "delete_workout", delete_mock), patches[6]:
             result = sync_module.sync_routines()
-        assert result["created"] == 1
+        assert result["updated"] == 1
+        assert result["created"] == 0
         assert result["skipped"] == 0
         create_mock.assert_called_once()
         delete_mock.assert_called_once_with(delete_mock.call_args[0][0], "555")
@@ -285,7 +287,9 @@ class TestSyncRoutines:
         with patches[0], patches[1], patches[2], patches[3], patches[4], \
                 patch.object(sync_module, "delete_workout", delete_mock), patches[6]:
             result = sync_module.sync_routines(force=True)
-        assert result["created"] == 1
+        # Forcing a routine that was already synced counts as an update.
+        assert result["updated"] == 1
+        assert result["created"] == 0
         assert result["skipped"] == 0
         create_mock.assert_called_once()
         delete_mock.assert_called_once_with(delete_mock.call_args[0][0], "555")

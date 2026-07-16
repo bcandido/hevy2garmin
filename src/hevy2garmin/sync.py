@@ -759,6 +759,7 @@ def sync_routines(
 
     stats = {
         "created": 0,
+        "updated": 0,
         "skipped": 0,
         "failed": 0,
         "scheduled": 0,
@@ -785,13 +786,19 @@ def sync_routines(
                 stats["skipped"] += 1
                 continue
 
+            # A prior sync record means this run replaces it (an update), not a
+            # brand-new create — tracked separately for the summary.
+            outcome = "updated" if existing else "created"
+
             if dry_run:
+                verb = "update" if existing else "create"
                 logger.info(
-                    "[dry-run] Would create Garmin workout '%s' with %d step(s)",
+                    "[dry-run] Would %s Garmin workout '%s' with %d step(s)",
+                    verb,
                     title,
                     len(payload["workoutSegments"][0]["workoutSteps"]),
                 )
-                stats["created"] += 1
+                stats[outcome] += 1
                 continue
 
             # Content changed (or forced) — drop the stale Garmin workout first.
@@ -819,13 +826,13 @@ def sync_routines(
                 scheduled_date=schedule_date,
                 content_hash=content_hash,
             )
-            stats["created"] += 1
+            stats[outcome] += 1
         except Exception:
             logger.exception("Failed to sync routine %s (%s)", rid, title)
             stats["failed"] += 1
 
     logger.info(
-        "Routine sync done — created=%d skipped=%d failed=%d scheduled=%d",
-        stats["created"], stats["skipped"], stats["failed"], stats["scheduled"],
+        "Routine sync done — created=%d updated=%d skipped=%d failed=%d scheduled=%d",
+        stats["created"], stats["updated"], stats["skipped"], stats["failed"], stats["scheduled"],
     )
     return stats
