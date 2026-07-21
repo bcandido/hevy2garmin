@@ -175,6 +175,10 @@ class Database(ABC):
         """Return the Garmin calendar entry ids currently booked for a routine."""
 
     @abstractmethod
+    def get_routine_scheduled_dates(self, hevy_routine_id: str) -> list[str]:
+        """Return the distinct dates (ISO) a routine currently has booked, ascending."""
+
+    @abstractmethod
     def clear_routine_schedules(self, hevy_routine_id: str) -> None:
         """Drop all tracked calendar entries for a routine (after unscheduling them)."""
 

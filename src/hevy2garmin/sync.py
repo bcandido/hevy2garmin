@@ -786,20 +786,38 @@ def fetch_all_routines(hevy: HevyClient, page_size: int = 10) -> list[dict]:
     return routines
 
 
-def _reschedule_routine(client, store, hevy_routine_id, workout_id, dates: list[str]) -> None:
+def _is_not_found(exc: Exception) -> bool:
+    """True when ``exc`` is a Garmin HTTP 404 (the calendar entry is already gone).
+
+    garth raises ``requests`` ``HTTPError`` with a ``response`` carrying ``status_code``;
+    fall back to a string check for wrappers that don't preserve it.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 404:
+        return True
+    return "404" in str(exc)
+
+
+def _reschedule_routine(
+    client, store, hevy_routine_id, workout_id, dates: list[str], *, unschedule_prior: bool = True
+) -> None:
     """Book ``dates`` for a routine's workout, replacing its prior calendar entries.
 
     Garmin appends a fresh calendar entry on every schedule POST (no server-side
     dedup), so re-scheduling would stack duplicates. We unschedule every entry we
-    previously tracked for this routine first — best-effort, since an id whose
-    workout was already deleted just 404s — then book the new dates and record the
-    ids Garmin returns so the next reschedule can clean them up too.
+    previously tracked for this routine first, then book the new dates and record
+    the ids Garmin returns so the next reschedule can clean them up too.
+
+    ``unschedule_prior=False`` skips the unschedule calls — used when the workout was
+    just deleted (its calendar entries already cascaded away on Garmin), so hitting
+    the schedule endpoint for each stale id would only waste rate-limited 404s.
     """
-    for old_id in store.get_routine_schedule_ids(hevy_routine_id):
-        try:
-            unschedule_workout(client, old_id)
-        except Exception:
-            logger.warning("  Could not unschedule stale calendar entry %s", old_id)
+    if unschedule_prior:
+        for old_id in store.get_routine_schedule_ids(hevy_routine_id):
+            try:
+                unschedule_workout(client, old_id)
+            except Exception:
+                logger.warning("  Could not unschedule stale calendar entry %s", old_id)
     store.clear_routine_schedules(hevy_routine_id)
     for day in dates:
         schedule_id = schedule_workout(client, workout_id, day)
@@ -953,13 +971,21 @@ def sync_routines(
                 stats["failed"] += 1
                 continue
 
-            # Recreating the workout drops any calendar entry the old one had, so
-            # re-apply a prior schedule when this run doesn't set a new one. Only an
-            # explicit schedule_date counts toward the "scheduled" stat; re-applying a
-            # stored date is a restore, not a new booking.
-            effective_schedule_date = schedule_date or (existing or {}).get("scheduled_date")
+            # Recreating the workout drops the calendar entries the old one had, so
+            # re-apply the prior schedule when this run doesn't set a new one. An
+            # explicit schedule_date overrides; otherwise restore *every* date the
+            # routine had booked (so a recurring routine keeps all its entries), falling
+            # back to the single stored date for rows created before per-entry tracking.
+            # Only an explicit schedule_date counts toward the "scheduled" stat.
+            if schedule_date:
+                dates_to_book = [schedule_date]
+            else:
+                dates_to_book = store.get_routine_scheduled_dates(rid)
+                if not dates_to_book and (existing or {}).get("scheduled_date"):
+                    dates_to_book = [existing["scheduled_date"]]
+            effective_schedule_date = min(dates_to_book) if dates_to_book else None
 
-            if effective_schedule_date:
+            if dates_to_book:
                 # Persist the created workout *before* the schedule call, marked
                 # 'schedule_pending'. If scheduling then errors (Garmin 429/500), the
                 # workout is already tracked, so the next sync deletes+recreates it
@@ -974,10 +1000,10 @@ def sync_routines(
                     status="schedule_pending",
                 )
                 # The old workout (and its Garmin calendar entries) was just deleted,
-                # so unschedule prior tracked ids too and record the new entry — keeps
-                # a later manual reschedule idempotent instead of stacking duplicates.
+                # so its tracked ids are already gone — clear+rebook without spending a
+                # rate-limited unschedule call per stale id.
                 _reschedule_routine(
-                    garmin_client, store, rid, workout_id, [effective_schedule_date]
+                    garmin_client, store, rid, workout_id, dates_to_book, unschedule_prior=False
                 )
                 if schedule_date:
                     stats["scheduled"] += 1
@@ -1113,7 +1139,13 @@ def unschedule_routine_entry(
     client = get_client(garmin_email, garmin_password, garmin_token_dir)
     try:
         unschedule_workout(client, schedule_id)
-    except Exception:
-        logger.warning("  Could not unschedule calendar entry %s", schedule_id)
+    except Exception as e:
+        # A 404 means the entry is already gone on Garmin — safe to drop our row. Any
+        # other error (429/500/network) is transient: keep the row and re-raise so the
+        # caller surfaces the failure and the user can retry, instead of orphaning a
+        # calendar entry we can no longer see or remove.
+        if not _is_not_found(e):
+            raise
+        logger.info("  Calendar entry %s already gone on Garmin", schedule_id)
     store.delete_routine_schedule(hevy_routine_id, schedule_id)
     logger.info("Unscheduled routine %s entry %s", hevy_routine_id, schedule_id)

@@ -373,6 +373,27 @@ class TestSyncRoutines:
         # ...and the date is kept on the record instead of being wiped to None.
         assert store.get_synced_routine("r1")["scheduled_date"] == "2026-08-01"
 
+    def test_resync_restores_all_recurring_dates(self, tmp_path: Path) -> None:
+        # A recurring routine booked on 3 dates, then edited: the content-change re-sync
+        # must re-book ALL 3 dates on the recreated workout, not collapse to one.
+        routines = [{"id": "r1", "title": "Push", "updated_at": "2026-01-01T00:00:00Z", "exercises": []}]
+        store, create_mock, schedule_mock, patches = self._patched(tmp_path, routines)
+        store.mark_routine_synced("r1", garmin_workout_id="555",
+                                  scheduled_date="2026-08-03", content_hash="stale-hash")
+        for d in ("2026-08-03", "2026-08-10", "2026-08-17"):
+            store.add_routine_schedule("r1", f"old-{d}", d)
+        schedule_mock.side_effect = lambda _client, _wid, day: f"new-{day}"
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                patch.object(sync_module, "delete_workout", MagicMock()), patches[6], patches[7]:
+            result = sync_module.sync_routines()
+        assert result["updated"] == 1
+        # All three dates re-booked on the new workout, and tracked with fresh ids.
+        assert sorted(c.args[2] for c in schedule_mock.call_args_list) == [
+            "2026-08-03", "2026-08-10", "2026-08-17"]
+        assert set(store.get_routine_schedule_ids("r1")) == {
+            "new-2026-08-03", "new-2026-08-10", "new-2026-08-17"}
+        assert store.get_synced_routine("r1")["scheduled_date"] == "2026-08-03"
+
     def test_schedule_records_calendar_entry(self, tmp_path: Path) -> None:
         # A first sync with an explicit date books the Garmin calendar and records the
         # returned scheduleId, so a later reschedule can unschedule it instead of stacking.
@@ -630,10 +651,21 @@ class TestUnscheduleRoutineEntry:
         # Only the removed entry is dropped from tracking.
         assert store.get_routine_schedule_ids("r1") == ["222"]
 
-    def test_removes_row_even_when_garmin_errors(self, tmp_path: Path) -> None:
-        # A Garmin failure (e.g. entry already gone) must not leave a stuck row.
+    def test_keeps_row_and_raises_on_transient_error(self, tmp_path: Path) -> None:
+        # A transient Garmin failure must NOT drop the row (else the calendar entry is
+        # orphaned and unremovable) — it re-raises so the caller can surface a retry.
         store, unschedule_mock, patches = self._patched(tmp_path)
         unschedule_mock.side_effect = RuntimeError("Garmin 500")
+        store.add_routine_schedule("r1", "111", "2026-07-20")
+        with patches[0], patches[1], patches[2], patches[3]:
+            with pytest.raises(RuntimeError, match="500"):
+                sync_module.unschedule_routine_entry("r1", "111")
+        assert store.get_routine_schedule_ids("r1") == ["111"]
+
+    def test_removes_row_when_entry_already_gone_404(self, tmp_path: Path) -> None:
+        # A 404 means the entry is already gone on Garmin → safe to drop the stale row.
+        store, unschedule_mock, patches = self._patched(tmp_path)
+        unschedule_mock.side_effect = RuntimeError("404 Client Error: Not Found")
         store.add_routine_schedule("r1", "111", "2026-07-20")
         with patches[0], patches[1], patches[2], patches[3]:
             sync_module.unschedule_routine_entry("r1", "111")
@@ -734,6 +766,21 @@ class TestScheduledWorkoutsUI:
         # The entry is gone and the refreshed fragment is returned.
         assert store.get_routine_schedule_ids("r1") == ["s1"]
         assert 'id="scheduled-table"' in resp.text
+
+    def test_unschedule_route_keeps_row_on_transient_error(self, tmp_path: Path) -> None:
+        store = SQLiteDatabase(tmp_path / "ui.db")
+        self._seed(store, 2)
+        db_patch, client = self._client(store)
+        with db_patch, client, \
+                patch.object(sync_module, "load_config", return_value={
+                    "garmin_email": "e", "garmin_password": "p"}), \
+                patch.object(sync_module, "get_client", return_value=MagicMock()), \
+                patch.object(sync_module, "unschedule_workout",
+                             MagicMock(side_effect=RuntimeError("Garmin 500"))):
+            resp = client.post("/api/routines/r1/schedule/s0/unschedule?page=1")
+        # Transient failure surfaces an error toast and keeps the entry tracked.
+        assert "toast-error" in resp.text
+        assert set(store.get_routine_schedule_ids("r1")) == {"s0", "s1"}
 
 
 class TestDbFacade:

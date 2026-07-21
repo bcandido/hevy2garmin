@@ -262,6 +262,17 @@ class PostgresDatabase(Database):
                 )
                 return [r["schedule_id"] for r in cur.fetchall()]
 
+    def get_routine_scheduled_dates(self, hevy_routine_id: str) -> list[str]:
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT scheduled_date FROM routine_schedules "
+                    "WHERE hevy_routine_id = %s AND scheduled_date IS NOT NULL "
+                    "ORDER BY scheduled_date ASC",
+                    (hevy_routine_id,),
+                )
+                return [r["scheduled_date"] for r in cur.fetchall()]
+
     def clear_routine_schedules(self, hevy_routine_id: str) -> None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:
@@ -281,41 +292,42 @@ class PostgresDatabase(Database):
             conn.commit()
             return deleted
 
-    def get_upcoming_routine_schedules(
-        self, on_or_after: str, limit: int, offset: int, title_query: str | None = None
-    ) -> list[dict]:
+    @staticmethod
+    def _upcoming_from_where(on_or_after: str, title_query: str | None) -> tuple[str, list]:
+        """Shared FROM/JOIN/WHERE for the upcoming-schedules get + count queries."""
         sql = (
-            "SELECT rs.hevy_routine_id, rs.schedule_id, rs.scheduled_date, sr.title "
             "FROM routine_schedules rs "
             "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
             "WHERE rs.scheduled_date >= %s"
         )
         params: list = [on_or_after]
         if title_query:
+            # %% is an escaped literal % under psycopg2's parameter substitution.
             sql += " AND LOWER(sr.title) LIKE '%%' || LOWER(%s) || '%%'"
             params.append(title_query)
-        sql += " ORDER BY rs.scheduled_date ASC, sr.title ASC LIMIT %s OFFSET %s"
-        params += [limit, offset]
+        return sql, params
+
+    def get_upcoming_routine_schedules(
+        self, on_or_after: str, limit: int, offset: int, title_query: str | None = None
+    ) -> list[dict]:
+        from_where, params = self._upcoming_from_where(on_or_after, title_query)
+        sql = (
+            "SELECT rs.hevy_routine_id, rs.schedule_id, rs.scheduled_date, sr.title "
+            + from_where
+            + " ORDER BY rs.scheduled_date ASC, sr.title ASC LIMIT %s OFFSET %s"
+        )
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, params)
+                cur.execute(sql, params + [limit, offset])
                 return [dict(r) for r in cur.fetchall()]
 
     def count_upcoming_routine_schedules(
         self, on_or_after: str, title_query: str | None = None
     ) -> int:
-        sql = (
-            "SELECT COUNT(*) AS n FROM routine_schedules rs "
-            "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
-            "WHERE rs.scheduled_date >= %s"
-        )
-        params: list = [on_or_after]
-        if title_query:
-            sql += " AND LOWER(sr.title) LIKE '%%' || LOWER(%s) || '%%'"
-            params.append(title_query)
+        from_where, params = self._upcoming_from_where(on_or_after, title_query)
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(sql, params)
+                cur.execute("SELECT COUNT(*) AS n " + from_where, params)
                 return cur.fetchone()["n"]
 
     def get_routine_stats(self) -> dict:

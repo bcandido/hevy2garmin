@@ -131,6 +131,17 @@ class TestRoutineTracking:
         assert db.count_upcoming_routine_schedules(today, "cardio") == 0
         assert db.count_upcoming_routine_schedules(today) == 2
 
+    def test_get_routine_scheduled_dates(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        db.add_routine_schedule("r1", "s2", "2026-08-10")
+        db.add_routine_schedule("r1", "s1", "2026-08-03")
+        db.add_routine_schedule("r1", "s3", "2026-08-03")  # duplicate date
+        db.add_routine_schedule("r2", "s9", "2026-09-01")  # other routine
+        # Distinct dates for the routine, ascending.
+        assert db.get_routine_scheduled_dates("r1") == ["2026-08-03", "2026-08-10"]
+        assert db.get_routine_scheduled_dates("r2") == ["2026-09-01"]
+        assert db.get_routine_scheduled_dates("nope") == []
+
     def test_delete_routine_schedule_one_entry(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
         db.add_routine_schedule("r1", "111", "2026-07-20")
