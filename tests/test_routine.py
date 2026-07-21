@@ -665,6 +665,21 @@ class TestScheduledWorkoutsUI:
         # Out-of-range page clamps to the last page rather than erroring.
         assert "Page 2 of 2" in clamped
 
+    def test_filter_by_routine_name_and_start_date(self, tmp_path: Path) -> None:
+        store = SQLiteDatabase(tmp_path / "ui.db")
+        store.mark_routine_synced("r1", garmin_workout_id="w1", title="Push Day")
+        store.mark_routine_synced("r2", garmin_workout_id="w2", title="Leg Day")
+        store.add_routine_schedule("r1", "s1", "2999-01-05")
+        store.add_routine_schedule("r2", "s2", "2999-02-10")
+        db_patch, client = self._client(store)
+        with db_patch, client:
+            by_name = client.get("/api/routines/schedules?q=leg").text
+            by_date = client.get("/api/routines/schedules?start=2999-02-01").text
+        # Text filter keeps only the matching routine.
+        assert "Leg Day" in by_name and "Push Day" not in by_name
+        # Start-date filter drops the earlier entry.
+        assert "Leg Day" in by_date and "Push Day" not in by_date
+
     def test_empty_state(self, tmp_path: Path) -> None:
         store = SQLiteDatabase(tmp_path / "ui.db")
         db_patch, client = self._client(store)

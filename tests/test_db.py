@@ -116,6 +116,21 @@ class TestRoutineTracking:
         assert [(r["scheduled_date"], r["title"]) for r in page2] == [("2026-07-27", "Push")]
         assert page2[0]["schedule_id"] == "s-b" and page2[0]["hevy_routine_id"] == "r1"
 
+    def test_upcoming_schedules_title_filter(self, tmp_path: Path) -> None:
+        db = _make_db(tmp_path)
+        db.mark_routine_synced("r1", garmin_workout_id="w1", title="Push Day")
+        db.mark_routine_synced("r2", garmin_workout_id="w2", title="Leg Day")
+        db.add_routine_schedule("r1", "s1", "2999-01-05")
+        db.add_routine_schedule("r2", "s2", "2999-01-06")
+        today = "2026-07-15"
+        # Case-insensitive substring match on the routine title.
+        assert db.count_upcoming_routine_schedules(today, "push") == 1
+        rows = db.get_upcoming_routine_schedules(today, 10, 0, "PUSH")
+        assert [r["title"] for r in rows] == ["Push Day"]
+        # A non-matching query returns nothing; no query returns everything.
+        assert db.count_upcoming_routine_schedules(today, "cardio") == 0
+        assert db.count_upcoming_routine_schedules(today) == 2
+
     def test_delete_routine_schedule_one_entry(self, tmp_path: Path) -> None:
         db = _make_db(tmp_path)
         db.add_routine_schedule("r1", "111", "2026-07-20")

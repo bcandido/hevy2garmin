@@ -1,5 +1,5 @@
 <div id="scheduled-table"
-     hx-get="/api/routines/schedules"
+     hx-get="/api/routines/schedules?start={{ start_date }}&q={{ title_query|urlencode }}"
      hx-trigger="refreshSchedules from:body"
      hx-target="#scheduled-table"
      hx-swap="outerHTML">
@@ -20,7 +20,7 @@
         <td style="padding:8px; text-align:right; white-space:nowrap;">
           {% if not demo_mode %}
           <button type="button" class="btn btn-secondary"
-                  hx-post="/api/routines/{{ s.hevy_routine_id }}/schedule/{{ s.schedule_id }}/unschedule?page={{ page }}"
+                  hx-post="/api/routines/{{ s.hevy_routine_id }}/schedule/{{ s.schedule_id }}/unschedule?page={{ page }}&start={{ start_date }}&q={{ title_query|urlencode }}"
                   hx-target="#scheduled-table" hx-swap="outerHTML"
                   hx-confirm="Remove this scheduled workout from your Garmin calendar?"
                   hx-disabled-elt="this" style="font-size:12px; padding:4px 10px;">
@@ -36,13 +36,13 @@
   <div style="display:flex; gap:12px; align-items:center; justify-content:flex-end; margin-top:12px; font-size:13px; color:var(--text-muted);">
     <button type="button" class="btn btn-secondary"
             style="font-size:12px; padding:4px 10px;{% if page <= 1 %} opacity:0.4; cursor:not-allowed;{% endif %}"
-            hx-get="/api/routines/schedules?page={{ page - 1 }}"
+            hx-get="/api/routines/schedules?page={{ page - 1 }}&start={{ start_date }}&q={{ title_query|urlencode }}"
             hx-target="#scheduled-table" hx-swap="outerHTML"
             {% if page <= 1 %}disabled{% endif %}>Prev</button>
     <span>Page {{ page }} of {{ total_pages }}</span>
     <button type="button" class="btn btn-secondary"
             style="font-size:12px; padding:4px 10px;{% if page >= total_pages %} opacity:0.4; cursor:not-allowed;{% endif %}"
-            hx-get="/api/routines/schedules?page={{ page + 1 }}"
+            hx-get="/api/routines/schedules?page={{ page + 1 }}&start={{ start_date }}&q={{ title_query|urlencode }}"
             hx-target="#scheduled-table" hx-swap="outerHTML"
             {% if page >= total_pages %}disabled{% endif %}>Next</button>
   </div>

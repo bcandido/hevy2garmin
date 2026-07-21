@@ -184,17 +184,22 @@ class Database(ABC):
 
     @abstractmethod
     def get_upcoming_routine_schedules(
-        self, on_or_after: str, limit: int, offset: int
+        self, on_or_after: str, limit: int, offset: int, title_query: str | None = None
     ) -> list[dict]:
         """Return scheduled calendar entries on/after ``on_or_after`` (ISO date), with
         the routine title, ordered by date. Paginated via ``limit``/``offset``.
 
-        Each dict has ``hevy_routine_id``, ``schedule_id``, ``scheduled_date``, ``title``.
+        ``title_query`` (optional) filters to routines whose title contains it
+        (case-insensitive substring). Each dict has ``hevy_routine_id``,
+        ``schedule_id``, ``scheduled_date``, ``title``.
         """
 
     @abstractmethod
-    def count_upcoming_routine_schedules(self, on_or_after: str) -> int:
-        """Count scheduled calendar entries on/after ``on_or_after`` (for pagination)."""
+    def count_upcoming_routine_schedules(
+        self, on_or_after: str, title_query: str | None = None
+    ) -> int:
+        """Count scheduled entries on/after ``on_or_after`` (optionally filtered by
+        ``title_query``), for pagination."""
 
     @abstractmethod
     def get_routine_stats(self) -> dict:

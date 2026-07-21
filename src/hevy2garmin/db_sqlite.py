@@ -276,28 +276,40 @@ class SQLiteDatabase(Database):
         return deleted
 
     def get_upcoming_routine_schedules(
-        self, on_or_after: str, limit: int, offset: int
+        self, on_or_after: str, limit: int, offset: int, title_query: str | None = None
     ) -> list[dict]:
-        conn = self._get_conn()
-        rows = conn.execute(
+        sql = (
             "SELECT rs.hevy_routine_id, rs.schedule_id, rs.scheduled_date, sr.title "
             "FROM routine_schedules rs "
             "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
-            "WHERE rs.scheduled_date >= ? "
-            "ORDER BY rs.scheduled_date ASC, sr.title ASC "
-            "LIMIT ? OFFSET ?",
-            (on_or_after, limit, offset),
-        ).fetchall()
+            "WHERE rs.scheduled_date >= ?"
+        )
+        params: list = [on_or_after]
+        if title_query:
+            sql += " AND LOWER(sr.title) LIKE '%' || LOWER(?) || '%'"
+            params.append(title_query)
+        sql += " ORDER BY rs.scheduled_date ASC, sr.title ASC LIMIT ? OFFSET ?"
+        params += [limit, offset]
+        conn = self._get_conn()
+        rows = conn.execute(sql, params).fetchall()
         conn.close()
         keys = ("hevy_routine_id", "schedule_id", "scheduled_date", "title")
         return [dict(zip(keys, r)) for r in rows]
 
-    def count_upcoming_routine_schedules(self, on_or_after: str) -> int:
+    def count_upcoming_routine_schedules(
+        self, on_or_after: str, title_query: str | None = None
+    ) -> int:
+        sql = (
+            "SELECT COUNT(*) FROM routine_schedules rs "
+            "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
+            "WHERE rs.scheduled_date >= ?"
+        )
+        params: list = [on_or_after]
+        if title_query:
+            sql += " AND LOWER(sr.title) LIKE '%' || LOWER(?) || '%'"
+            params.append(title_query)
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM routine_schedules WHERE scheduled_date >= ?",
-            (on_or_after,),
-        ).fetchone()
+        row = conn.execute(sql, params).fetchone()
         conn.close()
         return row[0] or 0
 

@@ -282,28 +282,40 @@ class PostgresDatabase(Database):
             return deleted
 
     def get_upcoming_routine_schedules(
-        self, on_or_after: str, limit: int, offset: int
+        self, on_or_after: str, limit: int, offset: int, title_query: str | None = None
     ) -> list[dict]:
+        sql = (
+            "SELECT rs.hevy_routine_id, rs.schedule_id, rs.scheduled_date, sr.title "
+            "FROM routine_schedules rs "
+            "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
+            "WHERE rs.scheduled_date >= %s"
+        )
+        params: list = [on_or_after]
+        if title_query:
+            sql += " AND LOWER(sr.title) LIKE '%%' || LOWER(%s) || '%%'"
+            params.append(title_query)
+        sql += " ORDER BY rs.scheduled_date ASC, sr.title ASC LIMIT %s OFFSET %s"
+        params += [limit, offset]
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT rs.hevy_routine_id, rs.schedule_id, rs.scheduled_date, sr.title "
-                    "FROM routine_schedules rs "
-                    "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
-                    "WHERE rs.scheduled_date >= %s "
-                    "ORDER BY rs.scheduled_date ASC, sr.title ASC "
-                    "LIMIT %s OFFSET %s",
-                    (on_or_after, limit, offset),
-                )
+                cur.execute(sql, params)
                 return [dict(r) for r in cur.fetchall()]
 
-    def count_upcoming_routine_schedules(self, on_or_after: str) -> int:
+    def count_upcoming_routine_schedules(
+        self, on_or_after: str, title_query: str | None = None
+    ) -> int:
+        sql = (
+            "SELECT COUNT(*) AS n FROM routine_schedules rs "
+            "LEFT JOIN synced_routines sr ON rs.hevy_routine_id = sr.hevy_routine_id "
+            "WHERE rs.scheduled_date >= %s"
+        )
+        params: list = [on_or_after]
+        if title_query:
+            sql += " AND LOWER(sr.title) LIKE '%%' || LOWER(%s) || '%%'"
+            params.append(title_query)
         with self._get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) AS n FROM routine_schedules WHERE scheduled_date >= %s",
-                    (on_or_after,),
-                )
+                cur.execute(sql, params)
                 return cur.fetchone()["n"]
 
     def get_routine_stats(self) -> dict:
