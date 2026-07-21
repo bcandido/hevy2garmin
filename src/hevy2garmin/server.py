@@ -1317,15 +1317,19 @@ async def api_sync(request: Request):
     return _render("partials/sync_result.html", result=result)
 
 
-_SCHEDULES_PAGE_SIZE = 10
+_SCHEDULES_PAGE_SIZES = (10, 25, 100)
+_SCHEDULES_PAGE_SIZE = _SCHEDULES_PAGE_SIZES[0]
 
 
-def _schedules_context(page: int, start_date: str | None = None, title: str | None = None) -> dict:
+def _schedules_context(
+    page: int, start_date: str | None = None, title: str | None = None, page_size: int | None = None
+) -> dict:
     """Build the paginated 'scheduled workouts' context (local DB only).
 
     ``start_date`` (default today) filters to entries on/after that date; ``title``
-    filters by routine name (case-insensitive substring). Both are echoed back so the
-    filter form and the pagination/refresh URLs keep the current selection.
+    filters by routine name (case-insensitive substring); ``page_size`` (one of
+    ``_SCHEDULES_PAGE_SIZES``, default 10) sets rows per page. All are echoed back so
+    the filter form, selector and the pagination/refresh URLs keep the current state.
     """
     _db = db.get_db()
     start = start_date or date.today().isoformat()
@@ -1334,11 +1338,12 @@ def _schedules_context(page: int, start_date: str | None = None, title: str | No
     except (ValueError, TypeError):
         start = date.today().isoformat()
     title = (title or "").strip()
+    size = page_size if page_size in _SCHEDULES_PAGE_SIZES else _SCHEDULES_PAGE_SIZE
     total = _db.count_upcoming_routine_schedules(start, title or None)
-    total_pages = max(1, ceil(total / _SCHEDULES_PAGE_SIZE))
+    total_pages = max(1, ceil(total / size))
     page = max(1, min(page, total_pages))
     rows = _db.get_upcoming_routine_schedules(
-        start, _SCHEDULES_PAGE_SIZE, (page - 1) * _SCHEDULES_PAGE_SIZE, title or None
+        start, size, (page - 1) * size, title or None
     )
     return {
         "scheduled_workouts": rows,
@@ -1347,6 +1352,8 @@ def _schedules_context(page: int, start_date: str | None = None, title: str | No
         "sched_total": total,
         "start_date": start,
         "title_query": title,
+        "page_size": size,
+        "page_sizes": _SCHEDULES_PAGE_SIZES,
     }
 
 
@@ -1390,11 +1397,12 @@ async def routines_page(request: Request):
 
 @app.get("/api/routines/schedules", response_class=HTMLResponse)
 async def api_routines_schedules(
-    request: Request, page: int = 1, start: str | None = None, q: str | None = None
+    request: Request, page: int = 1, start: str | None = None, q: str | None = None,
+    size: int = _SCHEDULES_PAGE_SIZE,
 ):
     """Return the paginated 'scheduled workouts' table fragment (HTMX navigation/filter)."""
     try:
-        ctx = _schedules_context(page, start, q)
+        ctx = _schedules_context(page, start, q, size)
     except Exception:
         logger.exception("Failed to load scheduled workouts")
         return HTMLResponse('<div class="toast toast-error">Could not load scheduled workouts.</div>')
@@ -1479,6 +1487,7 @@ async def api_routine_schedule(request: Request, hevy_routine_id: str):
 async def api_routine_unschedule(
     request: Request, hevy_routine_id: str, schedule_id: str,
     page: int = 1, start: str | None = None, q: str | None = None,
+    size: int = _SCHEDULES_PAGE_SIZE,
 ):
     """Remove one scheduled calendar entry, then re-render the schedules table."""
     if is_demo_mode():
@@ -1495,7 +1504,7 @@ async def api_routine_unschedule(
     finally:
         _sync_executing.release()
 
-    return _render("routine_schedules.html", **_schedules_context(page, start, q))
+    return _render("routine_schedules.html", **_schedules_context(page, start, q, size))
 
 
 @app.post("/api/sync/{workout_id}", response_class=HTMLResponse)

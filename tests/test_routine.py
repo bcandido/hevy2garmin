@@ -680,6 +680,23 @@ class TestScheduledWorkoutsUI:
         # Start-date filter drops the earlier entry.
         assert "Leg Day" in by_date and "Push Day" not in by_date
 
+    def test_page_size_selector(self, tmp_path: Path) -> None:
+        store = SQLiteDatabase(tmp_path / "ui.db")
+        store.mark_routine_synced("r1", garmin_workout_id="w1", title="Push")
+        for i in range(30):  # 30 future entries
+            store.add_routine_schedule("r1", f"s{i}", f"2999-{i // 28 + 1:02d}-{i % 28 + 1:02d}")
+        db_patch, client = self._client(store)
+        with db_patch, client:
+            size25 = client.get("/api/routines/schedules?size=25").text
+            size100 = client.get("/api/routines/schedules?size=100").text
+            bad = client.get("/api/routines/schedules?size=7").text  # invalid → default 10
+        # One Remove button per row → count rows per page.
+        assert size25.count("/unschedule?") == 25 and "Page 1 of 2" in size25
+        assert '<option value="25" selected>' in size25
+        assert size100.count("/unschedule?") == 30 and "Page 1 of" not in size100
+        assert bad.count("/unschedule?") == 10 and "Page 1 of 3" in bad
+        assert '<option value="10" selected>' in bad
+
     def test_empty_state(self, tmp_path: Path) -> None:
         store = SQLiteDatabase(tmp_path / "ui.db")
         db_patch, client = self._client(store)
