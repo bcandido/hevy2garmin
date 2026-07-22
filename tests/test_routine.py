@@ -663,13 +663,26 @@ class TestUnscheduleRoutineEntry:
         assert store.get_routine_schedule_ids("r1") == ["111"]
 
     def test_removes_row_when_entry_already_gone_404(self, tmp_path: Path) -> None:
-        # A 404 means the entry is already gone on Garmin → safe to drop the stale row.
+        # A real HTTP 404 (response.status_code) means the entry is already gone → drop it.
         store, unschedule_mock, patches = self._patched(tmp_path)
-        unschedule_mock.side_effect = RuntimeError("404 Client Error: Not Found")
+        err = RuntimeError("Not Found")
+        err.response = type("R", (), {"status_code": 404})()
+        unschedule_mock.side_effect = err
         store.add_routine_schedule("r1", "111", "2026-07-20")
         with patches[0], patches[1], patches[2], patches[3]:
             sync_module.unschedule_routine_entry("r1", "111")
         assert store.get_routine_schedule_ids("r1") == []
+
+    def test_transient_error_with_404_in_message_keeps_row(self, tmp_path: Path) -> None:
+        # A transient error with no HTTP status whose text merely contains "404" (a
+        # scheduleId or retry delay) must NOT be mistaken for "already gone" — keep the row.
+        store, unschedule_mock, patches = self._patched(tmp_path)
+        unschedule_mock.side_effect = RuntimeError("HTTP 500 at /schedule/40412, retry in 40400ms")
+        store.add_routine_schedule("r1", "111", "2026-07-20")
+        with patches[0], patches[1], patches[2], patches[3]:
+            with pytest.raises(RuntimeError):
+                sync_module.unschedule_routine_entry("r1", "111")
+        assert store.get_routine_schedule_ids("r1") == ["111"]
 
 
 class TestScheduledWorkoutsUI:

@@ -787,15 +787,16 @@ def fetch_all_routines(hevy: HevyClient, page_size: int = 10) -> list[dict]:
 
 
 def _is_not_found(exc: Exception) -> bool:
-    """True when ``exc`` is a Garmin HTTP 404 (the calendar entry is already gone).
+    """True only when ``exc`` is a Garmin HTTP 404 (the calendar entry is already gone).
 
-    garth raises ``requests`` ``HTTPError`` with a ``response`` carrying ``status_code``;
-    fall back to a string check for wrappers that don't preserve it.
+    garth raises ``requests`` ``HTTPError`` carrying ``response.status_code``; trust only
+    that. A missing status is treated as transient (keep the row and re-raise) rather than
+    string-matching "404" in the message — a transient error whose text merely contains
+    404 (a scheduleId, a retry delay like ``40400ms``) would otherwise drop the row, the
+    exact orphan this guard prevents.
     """
     resp = getattr(exc, "response", None)
-    if resp is not None and getattr(resp, "status_code", None) == 404:
-        return True
-    return "404" in str(exc)
+    return resp is not None and getattr(resp, "status_code", None) == 404
 
 
 def _reschedule_routine(
