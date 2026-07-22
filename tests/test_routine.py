@@ -291,7 +291,9 @@ class TestSyncRoutines:
             result = sync_module.sync_routine("r1")
         assert result["outcome"] == "created"
         assert result["row"] == {
-            "id": "r1", "title": "Push", "exercise_count": 1, "synced": True, "scheduled_date": None}
+            "id": "r1", "title": "Push",
+            "exercises": [{"name": "Bench Press (Barbell)", "sets": 1}],
+            "exercise_count": 1, "synced": True, "scheduled_date": None}
         create_mock.assert_called_once()
         assert store.get_synced_routine("r1")["garmin_workout_id"] == "777"
 
@@ -725,8 +727,9 @@ class TestScheduledWorkoutsUI:
             page2 = client.get("/api/routines/schedules?page=2").text
             clamped = client.get("/api/routines/schedules?page=99").text
         assert "Page 1 of 2" in page1
-        assert "2999-01-11" not in page1  # the 11th entry is on page 2
-        assert "Page 2 of 2" in page2 and "2999-01-11" in page2
+        # The timeline humanizes dates ("Jan 11"); the 11th entry sits on page 2.
+        assert "Jan 11" not in page1
+        assert "Page 2 of 2" in page2 and "Jan 11" in page2
         # Out-of-range page clamps to the last page rather than erroring.
         assert "Page 2 of 2" in clamped
 

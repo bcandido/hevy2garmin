@@ -1046,8 +1046,8 @@ def sync_routine(
 
     Fetches the routine from Hevy, reconciles against the Garmin library, and runs the
     same per-routine logic as :func:`sync_routines`. Returns
-    ``{"outcome": ..., "row": {id, title, exercise_count, synced, scheduled_date}}`` —
-    ``row`` is a render-ready dict for the routines table. Raises ``ValueError`` when the
+    ``{"outcome": ..., "row": {id, title, exercises, exercise_count, synced, scheduled_date}}`` —
+    ``row`` is a render-ready dict for the routines card. Raises ``ValueError`` when the
     routine isn't found in the Hevy account.
     """
     cfg = config or load_config()
@@ -1076,10 +1076,18 @@ def sync_routine(
     )
 
     record = store.get_synced_routine(hevy_routine_id)
+    exercises = [
+        {
+            "name": ex.get("title") or ex.get("name") or "Exercise",
+            "sets": len(ex.get("sets") or []),
+        }
+        for ex in (routine.get("exercises") or [])
+    ]
     row = {
         "id": hevy_routine_id,
         "title": routine.get("title") or routine.get("name") or "Routine",
-        "exercise_count": len(routine.get("exercises") or []),
+        "exercises": exercises,
+        "exercise_count": len(exercises),
         "synced": record is not None,
         "scheduled_date": (record or {}).get("scheduled_date"),
     }

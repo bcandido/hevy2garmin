@@ -55,6 +55,23 @@ def _get_cat_names() -> dict[int, str]:
 _jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
 
 
+# Weekday / short-date helpers for the routines "Upcoming schedule" timeline.
+_SCHED_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_SCHED_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _sched_parts(iso: Any) -> dict[str, str]:
+    """Format an ISO date (YYYY-MM-DD) into {'short': 'Jul 24', 'weekday': 'Friday'}."""
+    try:
+        d = date.fromisoformat(str(iso)[:10])
+        return {"short": f"{_SCHED_MONTHS[d.month - 1]} {d.day}", "weekday": _SCHED_WEEKDAYS[d.weekday()]}
+    except (ValueError, TypeError):
+        return {"short": str(iso or ""), "weekday": ""}
+
+
+_jinja_env.globals["sched_parts"] = _sched_parts
+
+
 def _render(template_name: str, **ctx) -> HTMLResponse:
     t = _jinja_env.get_template(template_name)
     ctx.setdefault("auth_enabled", auth_enabled())
@@ -1381,18 +1398,37 @@ async def routines_page(request: Request):
         _cache_routines_total(_db, len(all_routines))
         for r in all_routines:
             record = _db.get_synced_routine(r.get("id", ""))
+            exercises = [
+                {
+                    "name": ex.get("title") or ex.get("name") or "Exercise",
+                    "sets": len(ex.get("sets") or []),
+                }
+                for ex in (r.get("exercises") or [])
+            ]
             routines.append({
                 "id": r.get("id", ""),
                 "title": r.get("title") or r.get("name") or "Routine",
-                "exercise_count": len(r.get("exercises", [])),
+                "exercises": exercises,
+                "exercise_count": len(exercises),
                 "synced": record is not None,
                 "scheduled_date": (record or {}).get("scheduled_date"),
             })
     except Exception:
         logger.exception("Failed to load Hevy routines")
         fetch_error = "Could not load routines from Hevy. Check your API key and try again."
+
+    total = len(routines)
+    synced = sum(1 for r in routines if r["synced"])
+    stats = {
+        "total": total,
+        "synced": synced,
+        "pending": max(0, total - synced),
+        "scheduled": sum(1 for r in routines if r["scheduled_date"]),
+        "pct": round(synced / total * 100) if total else 0,
+    }
     return _render(
-        "routines.html", request=request, routines=routines, fetch_error=fetch_error, **schedules
+        "routines.html", request=request, routines=routines, stats=stats,
+        fetch_error=fetch_error, **schedules
     )
 
 
