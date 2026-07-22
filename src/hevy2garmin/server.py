@@ -7,7 +7,9 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from html import escape
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,14 @@ from hevy2garmin.auth import auth_enabled, verify_session, sign_session, check_p
 from hevy2garmin.config import is_configured, load_config, save_config
 from hevy2garmin.demo import is_demo_mode
 from hevy2garmin.ratelimit import record_rate_limit, cooldown_remaining, clear_rate_limit, format_cooldown
-from hevy2garmin.sync import sync, sync_routines, routine_schedule_dates, schedule_routine
+from hevy2garmin.sync import (
+    sync,
+    sync_routines,
+    sync_routine,
+    routine_schedule_dates,
+    schedule_routine,
+    unschedule_routine_entry,
+)
 
 logger = logging.getLogger("hevy2garmin")
 
@@ -45,6 +54,23 @@ def _get_cat_names() -> dict[int, str]:
         52: "Treadmill", 65534: "Unknown",
     }
 _jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
+
+
+# Weekday / short-date helpers for the routines "Upcoming schedule" timeline.
+_SCHED_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_SCHED_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _sched_parts(iso: Any) -> dict[str, str]:
+    """Format an ISO date (YYYY-MM-DD) into {'short': 'Jul 24', 'weekday': 'Friday'}."""
+    try:
+        d = date.fromisoformat(str(iso)[:10])
+        return {"short": f"{_SCHED_MONTHS[d.month - 1]} {d.day}", "weekday": _SCHED_WEEKDAYS[d.weekday()]}
+    except (ValueError, TypeError):
+        return {"short": str(iso or ""), "weekday": ""}
+
+
+_jinja_env.globals["sched_parts"] = _sched_parts
 
 
 def _render(template_name: str, **ctx) -> HTMLResponse:
@@ -1310,12 +1336,59 @@ async def api_sync(request: Request):
     return _render("partials/sync_result.html", result=result)
 
 
+_SCHEDULES_PAGE_SIZES = (10, 25, 100)
+_SCHEDULES_PAGE_SIZE = _SCHEDULES_PAGE_SIZES[0]
+
+
+def _schedules_context(
+    page: int, start_date: str | None = None, title: str | None = None, page_size: int | None = None
+) -> dict:
+    """Build the paginated 'scheduled workouts' context (local DB only).
+
+    ``start_date`` (default today) filters to entries on/after that date; ``title``
+    filters by routine name (case-insensitive substring); ``page_size`` (one of
+    ``_SCHEDULES_PAGE_SIZES``, default 10) sets rows per page. All are echoed back so
+    the filter form, selector and the pagination/refresh URLs keep the current state.
+    """
+    _db = db.get_db()
+    start = start_date or date.today().isoformat()
+    try:
+        date.fromisoformat(start)  # guard the query and the value echoed into the form
+    except (ValueError, TypeError):
+        start = date.today().isoformat()
+    title = (title or "").strip()
+    size = page_size if page_size in _SCHEDULES_PAGE_SIZES else _SCHEDULES_PAGE_SIZE
+    total = _db.count_upcoming_routine_schedules(start, title or None)
+    total_pages = max(1, ceil(total / size))
+    page = max(1, min(page, total_pages))
+    rows = _db.get_upcoming_routine_schedules(
+        start, size, (page - 1) * size, title or None
+    )
+    return {
+        "scheduled_workouts": rows,
+        "page": page,
+        "total_pages": total_pages,
+        "sched_total": total,
+        "start_date": start,
+        "title_query": title,
+        "page_size": size,
+        "page_sizes": _SCHEDULES_PAGE_SIZES,
+    }
+
+
 @app.get("/routines", response_class=HTMLResponse)
 async def routines_page(request: Request):
     """List Hevy routines and their sync status."""
     config = load_config()
     routines: list[dict] = []
     fetch_error = None
+    # Local-DB data — load it outside the Hevy fetch so the schedules table still
+    # renders even when Hevy is unreachable.
+    try:
+        schedules = _schedules_context(1)
+    except Exception:
+        logger.exception("Failed to load scheduled workouts")
+        schedules = {"scheduled_workouts": [], "page": 1, "total_pages": 1, "sched_total": 0}
     try:
         from hevy2garmin.hevy import HevyClient
         from hevy2garmin.sync import fetch_all_routines, _cache_routines_total
@@ -1326,17 +1399,52 @@ async def routines_page(request: Request):
         _cache_routines_total(_db, len(all_routines))
         for r in all_routines:
             record = _db.get_synced_routine(r.get("id", ""))
+            exercises = [
+                {
+                    "name": ex.get("title") or ex.get("name") or "Exercise",
+                    "sets": len(ex.get("sets") or []),
+                }
+                for ex in (r.get("exercises") or [])
+            ]
             routines.append({
                 "id": r.get("id", ""),
                 "title": r.get("title") or r.get("name") or "Routine",
-                "exercise_count": len(r.get("exercises", [])),
+                "exercises": exercises,
+                "exercise_count": len(exercises),
                 "synced": record is not None,
                 "scheduled_date": (record or {}).get("scheduled_date"),
             })
     except Exception:
         logger.exception("Failed to load Hevy routines")
         fetch_error = "Could not load routines from Hevy. Check your API key and try again."
-    return _render("routines.html", request=request, routines=routines, fetch_error=fetch_error)
+
+    total = len(routines)
+    synced = sum(1 for r in routines if r["synced"])
+    stats = {
+        "total": total,
+        "synced": synced,
+        "pending": max(0, total - synced),
+        "scheduled": sum(1 for r in routines if r["scheduled_date"]),
+        "pct": round(synced / total * 100) if total else 0,
+    }
+    return _render(
+        "routines.html", request=request, routines=routines, stats=stats,
+        fetch_error=fetch_error, **schedules
+    )
+
+
+@app.get("/api/routines/schedules", response_class=HTMLResponse)
+async def api_routines_schedules(
+    request: Request, page: int = 1, start: str | None = None, q: str | None = None,
+    size: int = _SCHEDULES_PAGE_SIZE,
+):
+    """Return the paginated 'scheduled workouts' table fragment (HTMX navigation/filter)."""
+    try:
+        ctx = _schedules_context(page, start, q, size)
+    except Exception:
+        logger.exception("Failed to load scheduled workouts")
+        return HTMLResponse('<div class="toast toast-error">Could not load scheduled workouts.</div>')
+    return _render("routine_schedules.html", **ctx)
 
 
 @app.post("/api/routines/sync", response_class=HTMLResponse)
@@ -1365,7 +1473,45 @@ async def api_routines_sync(request: Request):
         + (f", {result['scheduled']} scheduled" if result.get("scheduled") else "")
     )
     cls = "toast-error" if result["failed"] else "toast-success"
-    return HTMLResponse(f'<div class="toast {cls}">Routine sync complete: {msg}</div>')
+    # Sync's restore path can (re)schedule routines, so refresh the schedules table too.
+    return HTMLResponse(
+        f'<div class="toast {cls}">Routine sync complete: {msg}</div>',
+        headers={"HX-Trigger": "refreshSchedules"},
+    )
+
+
+@app.post("/api/routines/{hevy_routine_id}/sync", response_class=HTMLResponse)
+async def api_routine_sync_one(request: Request, hevy_routine_id: str):
+    """Sync a single Hevy routine and swap its table row in place."""
+    if is_demo_mode():
+        return HTMLResponse('<div class="toast toast-success">Sync disabled in demo mode.</div>')
+
+    form = await request.form()
+    force = form.get("force") in ("1", "true", "on")
+
+    if not _acquire_sync_lock():
+        return HTMLResponse('<div class="toast toast-error">Another sync is already running. Please wait.</div>')
+
+    try:
+        result = sync_routine(hevy_routine_id, force=force)
+    except Exception:
+        logger.exception("Routine %s sync failed", hevy_routine_id)
+        return HTMLResponse('<div class="toast toast-error">Routine sync failed. Check the logs for details.</div>')
+    finally:
+        _sync_executing.release()
+
+    outcome = result["outcome"]
+    # The routine title is user-controlled (Hevy account data), so escape it before
+    # interpolating into the toast HTML — these f-strings bypass Jinja's autoescape.
+    title = escape(result["row"]["title"])
+    if outcome == "failed":
+        return HTMLResponse(f'<div class="toast toast-error">Could not sync "{title}". Check the logs.</div>')
+    # Toast into #routines-result plus an out-of-band swap of the updated row, so it flips
+    # to "synced" (and gains the Schedule form) without a full page reload. HX-Trigger
+    # refreshes the schedules table since the restore path may have re-booked dates.
+    row_html = _render("routine_row.html", r=result["row"], oob=True).body.decode()
+    toast = f'<div class="toast toast-success">Synced "{title}" ({outcome}).</div>'
+    return HTMLResponse(toast + row_html, headers={"HX-Trigger": "refreshSchedules"})
 
 
 @app.post("/api/routines/{hevy_routine_id}/schedule", response_class=HTMLResponse)
@@ -1402,9 +1548,35 @@ async def api_routine_schedule(request: Request, hevy_routine_id: str):
 
     n = result["scheduled"]
     span = f" ({result['dates'][0]} → {result['dates'][-1]})" if n > 1 else f" on {result['dates'][0]}"
+    # HX-Trigger fires a client event so the "Scheduled workouts" table refreshes itself.
     return HTMLResponse(
-        f'<div class="toast toast-success">Scheduled {n} session(s){span}.</div>'
+        f'<div class="toast toast-success">Scheduled {n} session(s){span}.</div>',
+        headers={"HX-Trigger": "refreshSchedules"},
     )
+
+
+@app.post("/api/routines/{hevy_routine_id}/schedule/{schedule_id}/unschedule", response_class=HTMLResponse)
+async def api_routine_unschedule(
+    request: Request, hevy_routine_id: str, schedule_id: str,
+    page: int = 1, start: str | None = None, q: str | None = None,
+    size: int = _SCHEDULES_PAGE_SIZE,
+):
+    """Remove one scheduled calendar entry, then re-render the schedules table."""
+    if is_demo_mode():
+        return HTMLResponse('<div class="toast toast-success">Unscheduling disabled in demo mode.</div>')
+
+    if not _acquire_sync_lock():
+        return HTMLResponse('<div class="toast toast-error">Another sync is already running. Please wait.</div>')
+
+    try:
+        unschedule_routine_entry(hevy_routine_id, schedule_id)
+    except Exception:
+        logger.exception("Unscheduling routine %s entry %s failed", hevy_routine_id, schedule_id)
+        return HTMLResponse('<div class="toast toast-error">Could not remove the scheduled workout. Check the logs.</div>')
+    finally:
+        _sync_executing.release()
+
+    return _render("routine_schedules.html", **_schedules_context(page, start, q, size))
 
 
 @app.post("/api/sync/{workout_id}", response_class=HTMLResponse)
