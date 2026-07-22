@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from datetime import date, datetime, timezone
+from html import escape
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -1500,13 +1501,16 @@ async def api_routine_sync_one(request: Request, hevy_routine_id: str):
         _sync_executing.release()
 
     outcome = result["outcome"]
+    # The routine title is user-controlled (Hevy account data), so escape it before
+    # interpolating into the toast HTML — these f-strings bypass Jinja's autoescape.
+    title = escape(result["row"]["title"])
     if outcome == "failed":
-        return HTMLResponse(f'<div class="toast toast-error">Could not sync "{result["row"]["title"]}". Check the logs.</div>')
+        return HTMLResponse(f'<div class="toast toast-error">Could not sync "{title}". Check the logs.</div>')
     # Toast into #routines-result plus an out-of-band swap of the updated row, so it flips
     # to "synced" (and gains the Schedule form) without a full page reload. HX-Trigger
     # refreshes the schedules table since the restore path may have re-booked dates.
     row_html = _render("routine_row.html", r=result["row"], oob=True).body.decode()
-    toast = f'<div class="toast toast-success">Synced "{result["row"]["title"]}" ({outcome}).</div>'
+    toast = f'<div class="toast toast-success">Synced "{title}" ({outcome}).</div>'
     return HTMLResponse(toast + row_html, headers={"HX-Trigger": "refreshSchedules"})
 
 
