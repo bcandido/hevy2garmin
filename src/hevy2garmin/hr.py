@@ -124,7 +124,6 @@ def fetch_activity_hr(
     if not start_dt or not end_dt:
         return []
     start_ms = int(start_dt.timestamp() * 1000)
-    end_ms = int(end_dt.timestamp() * 1000)
 
     try:
         call = (limiter.call if limiter is not None else (lambda f, *a: f(*a)))
@@ -134,6 +133,7 @@ def fetch_activity_hr(
             Garmin.ActivityDownloadFormat.ORIGINAL,
         )
         if not isinstance(downloaded, bytes) or not downloaded:
+            logger.warning("activity %s: HR download returned no bytes", activity_id)
             return []
 
         fit_bytes = downloaded
@@ -145,6 +145,7 @@ def fetch_activity_hr(
                     None,
                 )
                 if fit_member is None:
+                    logger.warning("activity %s: no .fit member in downloaded zip", activity_id)
                     return []
                 fit_bytes = archive.read(fit_member)
 
@@ -159,19 +160,22 @@ def fetch_activity_hr(
         finally:
             fit_logger.setLevel(previous_level)
     except Exception as exc:
-        logger.debug("activity HR fetch failed for %s: %s", activity_id, exc)
+        logger.warning("activity %s: HR download/parse failed: %s", activity_id, exc)
         return []
 
-    # Tolerate a small offset between the Hevy workout window and the watch's
-    # own recording clock (#244): a strict in-window match dropped every sample
-    # when the two differed even slightly, which then hard-failed Replace. The
-    # graceful merge fallback in sync_one_workout covers larger gaps.
-    window_buffer_ms = 180_000  # 3 minutes
+    # The downloaded FIT is the watch's own single recording of this workout, so
+    # every heart-rate record in it belongs to the workout. Take them all and
+    # rebase to the Hevy start for embedding, rather than intersecting with the
+    # Hevy workout window (#244): a watch activity whose clock differs from the
+    # Hevy log by more than a few minutes would otherwise lose all its samples.
     samples: list[dict] = []
+    record_count = 0
+    hr_record_count = 0
     for record in fit_file.records:
         message = record.message
         if not isinstance(message, RecordMessage):
             continue
+        record_count += 1
         timestamp = getattr(message, "timestamp", None)
         bpm = getattr(message, "heart_rate", None)
         if timestamp is None or bpm is None:
@@ -185,12 +189,20 @@ def fetch_activity_hr(
             bpm_int = int(bpm)
         except (TypeError, ValueError):
             continue
-        if (start_ms - window_buffer_ms) <= timestamp_ms <= (end_ms + window_buffer_ms) and 0 < bpm_int < 256:
-            samples.append({
-                "time": max(0.0, (timestamp_ms - start_ms) / 1000.0),
-                "hr": bpm_int,
-            })
+        if not 0 < bpm_int < 256:
+            continue
+        hr_record_count += 1
+        samples.append({
+            "time": max(0.0, (timestamp_ms - start_ms) / 1000.0),
+            "hr": bpm_int,
+        })
 
+    if not samples:
+        logger.warning(
+            "activity %s: no heart-rate samples extracted (%d record messages, "
+            "%d with valid HR); replacement will fall back to keeping the watch copy",
+            activity_id, record_count, hr_record_count,
+        )
     samples.sort(key=lambda sample: sample["time"])
     return samples
 

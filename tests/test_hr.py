@@ -148,6 +148,35 @@ class TestFetchActivityHR:
             {"time": 480.0, "hr": 150},
         ]
 
+    def test_extracts_hr_even_when_outside_hevy_window(self, tmp_path: Path):
+        # Regression #244: the watch activity's clock can differ from the Hevy
+        # log by more than a few minutes. The downloaded FIT is the watch's own
+        # single recording of this workout, so every HR record must be extracted
+        # regardless of the Hevy window (the old strict-window filter dropped
+        # them all, breaking Replace).
+        shifted = {
+            **self.WORKOUT,
+            "start_time": "2026-03-15T18:30:00+00:00",  # 30 min after the fetch window
+            "end_time": "2026-03-15T18:40:00+00:00",
+        }
+        fit_path = tmp_path / "activity.fit"
+        generate_fit(
+            shifted,
+            hr_samples=[{"time": 0, "hr": 111}, {"time": 300, "hr": 145}],
+            output_path=str(fit_path),
+        )
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("123_ACTIVITY.fit", fit_path.read_bytes())
+        client = MagicMock()
+        client.download_activity.return_value = output.getvalue()
+
+        # Fetch with the ORIGINAL window, 30 min earlier than the FIT's HR.
+        samples = fetch_activity_hr(client, 123, self.WORKOUT)
+
+        assert [s["hr"] for s in samples] == [111, 145]
+        assert all(s["time"] >= 0 for s in samples)
+
     def test_falls_back_to_daily_hr_when_original_download_fails(self):
         client = MagicMock()
         client.download_activity.side_effect = RuntimeError("not downloadable")
