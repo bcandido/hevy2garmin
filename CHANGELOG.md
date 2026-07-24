@@ -6,6 +6,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Hardened dashboard authentication. Failed logins are now rate-limited per client IP with exponential backoff and a global cap (HTTP 429 on lockout), so the login can't be brute-forced. The dashboard password can be supplied pre-hashed via `H2G_PASSWORD_HASH` (argon2, generated with `hevy2garmin hash-password`) so the plaintext never sits in the environment; session cookies gain the `Secure` flag over HTTPS and are signed with an optional dedicated `H2G_SECRET` (session lifetime configurable via `H2G_SESSION_TTL_DAYS`, default 30 days); a "Sign out everywhere" action invalidates every active session; and standard security headers (HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, a baseline CSP) are sent on every response. Existing password-only deployments keep working unchanged.
+
 ### Fixed
 - Routine sync now reconciles against the actual Garmin workout library before creating, so a database reset (ephemeral cloud storage, a migration) or a crash in the create→persist window no longer duplicates planned workouts. Before creating a routine's workout, a same-named workout already in the Garmin library is deleted and recreated instead of stacking a second copy — making routine sync self-healing across DB loss and mid-run failures. To stay safe, reconciliation only ever deletes a workout carrying hevy2garmin's provenance marker (now embedded in every synced routine's description), so a workout you built by hand in Garmin that happens to share a routine's title is never touched. The listing is best-effort: if it fails, sync falls back to the previous DB-only dedup.
 
