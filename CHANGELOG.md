@@ -6,6 +6,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-07-24
+
+### Fixed
+- The Replace watch strategy now extracts heart rate from the watch activity's own recording without an over-strict time window ([#244](https://github.com/drkostas/hevy2garmin/issues/244)). Previously it only kept HR samples that fell inside the Hevy workout window (plus a 3-minute buffer), so a watch activity whose clock differed from the Hevy log by more than a few minutes lost all of its HR and fell back to keeping the watch copy, with exercise names then showing as "unknown". It now takes every heart-rate record from the activity's own file, since that file is a single recording of the workout. When no HR can be extracted, the reason is now logged instead of silently swallowed, so genuine device-specific extraction failures can be diagnosed.
+
 ## [0.6.2] - 2026-07-23
 
 ### Fixed
